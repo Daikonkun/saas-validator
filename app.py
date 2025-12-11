@@ -3,12 +3,20 @@ import google.generativeai as genai
 import os
 import json
 from dotenv import load_dotenv
+try:
+    from fpdf import FPDF
+    HAS_FPDF = True
+except ImportError:
+    HAS_FPDF = False
+import io
 
 # Load environment variables
 load_dotenv()
 
 # Configure API Key
 api_key = os.getenv("GEMINI_API_KEY")
+payment_link = os.getenv("PAYMENT_LINK")
+
 if not api_key:
     # We'll handle this in the UI
     pass
@@ -74,14 +82,55 @@ def get_mock_response(idea):
 def get_mock_plan(idea):
     """Fallback mock response for the detailed plan."""
     return """
-    **Mock Execution Plan (API Unavailable):**
-    
-    1.  **Validation**: Go to Reddit r/SaaS and ask if anyone would pay for this. (Spoiler: No).
-    2.  **MVP**: Build a landing page in 1 hour using Carrd. Do not write code.
-    3.  **Outreach**: Cold email 50 potential users. If 0 reply, kill the idea.
-    4.  **Pivot**: Realize the market is too small. Switch to selling shovels to other AI startups.
-    5.  **Scale**: If by miracle you get users, automate the backend with Python.
+    1. Validation: Go to Reddit r/SaaS and ask if anyone would pay for this. (Spoiler: No).
+    2. MVP: Build a landing page in 1 hour using Carrd. Do not write code.
+    3. Outreach: Cold email 50 potential users. If 0 reply, kill the idea.
+    4. Pivot: Realize the market is too small. Switch to selling shovels to other AI startups.
+    5. Scale: If by miracle you get users, automate the backend with Python.
     """
+
+# --- PDF Generation ---
+
+def create_pdf(idea, roast, score, plan):
+    if not HAS_FPDF:
+        return None
+
+    class PDF(FPDF):
+        def header(self):
+            self.set_font('Arial', 'B', 15)
+            self.cell(0, 10, 'SaaS Validation Report', 0, 1, 'C')
+            self.ln(10)
+
+    pdf = PDF()
+    pdf.add_page()
+    
+    # Title & Idea
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, f"Idea: {idea}")
+    pdf.ln(5)
+
+    # Roast
+    pdf.set_font("Arial", 'B', size=14)
+    pdf.cell(0, 10, "The Verdict", ln=True)
+    pdf.set_font("Arial", size=12)
+    pdf.multi_cell(0, 10, f"{roast}")
+    pdf.ln(5)
+
+    # Score
+    pdf.set_font("Arial", 'B', size=14)
+    pdf.cell(0, 10, f"Viability Score: {score}/100", ln=True)
+    pdf.ln(5)
+
+    # Execution Plan
+    pdf.set_font("Arial", 'B', size=14)
+    pdf.cell(0, 10, "Execution Plan", ln=True)
+    pdf.set_font("Arial", size=12)
+    
+    # Clean up plan text for PDF (basic handling)
+    clean_plan = plan.replace('**', '').replace('##', '')
+    pdf.multi_cell(0, 10, clean_plan)
+
+    return pdf.output(dest='S').encode('latin-1')
 
 # --- API Functions ---
 
@@ -121,7 +170,9 @@ def get_execution_plan(idea):
         prompt = f"""
         Write a detailed 5-step execution plan for this SaaS idea:
         "{idea}"
-        Be specific, actionable, and ruthless. Format it as markdown.
+        Be specific, actionable, and ruthless. 
+        Format it as a clean numbered list.
+        Do not use markdown formatting (no bolding, no italics) to ensure clean PDF generation.
         """
         response = model.generate_content(prompt)
         return response.text
@@ -136,7 +187,10 @@ with st.sidebar:
     st.header("About")
     st.markdown("This AI will crush your dreams so the market doesn't have to.")
     st.markdown("---")
-    st.link_button("☕ Support the Developer", "https://www.buymeacoffee.com/")
+    if payment_link:
+        st.link_button("☕ Support the Developer", payment_link)
+    else:
+        st.write("☕ (Configure PAYMENT_LINK in .env)")
 
 # Main Content
 st.title("🔥 Roast My SaaS Idea")
@@ -145,9 +199,11 @@ st.markdown("### Validate your startup idea before you lose your life savings.")
 # User Input
 idea_input = st.text_area("What's your \"billion dollar\" idea?", height=150, placeholder="e.g., Uber for dog walkers who also know how to code...")
 
-# Session State to hold data between interactions
+# Session State
 if 'roast_result' not in st.session_state:
     st.session_state.roast_result = None
+if 'execution_plan' not in st.session_state:
+    st.session_state.execution_plan = None
 
 # Action Button
 if st.button("Roast My Idea 🔥"):
@@ -158,6 +214,7 @@ if st.button("Roast My Idea 🔥"):
     else:
         with st.spinner("Analyzing market saturation... Judging your life choices..."):
             st.session_state.roast_result = get_ai_response(idea_input)
+            st.session_state.execution_plan = None # Reset plan on new roast
 
 # Display Results
 if st.session_state.roast_result:
@@ -183,22 +240,37 @@ if st.session_state.roast_result:
     
     st.markdown("---")
     
-    # --- Feature: Report Generator ---
-    st.subheader("📄 One More Thing...")
-    st.markdown("Need a roadmap to fix this mess?")
+    # --- Feature: Money Loop ---
     
-    if st.button("Generate Detailed Execution Plan 🧠"):
-        with st.spinner("Drafting your escape plan..."):
-            plan_text = get_execution_plan(idea_input)
+    with st.expander("📂 Unlock Execution Roadmap"):
+        if st.session_state.execution_plan is None:
+            with st.spinner("Generating detailed roadmap..."):
+                 st.session_state.execution_plan = get_execution_plan(idea_input)
+        
+        plan_text = st.session_state.execution_plan
+        st.markdown(plan_text)
+        
+        st.markdown("---")
+        st.warning("This tool runs on paid API credits. If you found value, please support the build.")
+        
+        if payment_link:
+            st.link_button("☕ Buy me a Coffee", payment_link)
             
-            # Show in expander
-            with st.expander("View Execution Plan", expanded=True):
-                st.markdown(plan_text)
+        # PDF Generation
+        if st.session_state.execution_plan:
+            if HAS_FPDF:
+                # Normalize text for latin-1
+                safe_idea = idea_input.encode('latin-1', 'replace').decode('latin-1')
+                safe_roast = result.get("roast", "").encode('latin-1', 'replace').decode('latin-1')
+                safe_plan = plan_text.encode('latin-1', 'replace').decode('latin-1')
+
+                pdf_bytes = create_pdf(safe_idea, safe_roast, score, safe_plan)
                 
-            # Download Button for the Plan
-            st.download_button(
-                label="📥 Download Execution Plan",
-                data=plan_text,
-                file_name="execution_plan.txt",
-                mime="text/plain"
-            )
+                st.download_button(
+                    label="📥 Download PDF Report",
+                    data=pdf_bytes,
+                    file_name="saas_validation_report.pdf",
+                    mime="application/pdf"
+                )
+            else:
+                st.warning("⚠️ PDF generation disabled: 'fpdf' library not found. Run `pip install fpdf` to enable.")
